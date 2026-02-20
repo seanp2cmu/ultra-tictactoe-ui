@@ -1,6 +1,7 @@
 'use client';
 
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 import type {
   AIModel,
   CompareResult,
@@ -13,6 +14,7 @@ import type {
 } from './game-types';
 import { createInitialState, getValidMoves, makeMove, replayMoves, undoMove } from './game-logic';
 import { AI_MODELS, MOCK_SAVED_GAMES } from '@/src/constants/models';
+import { getCachedAnalysis, setCachedAnalysis } from './analysis-cache';
 
 interface ModelPrediction {
   move: { boardIndex: number; cellIndex: number };
@@ -76,7 +78,7 @@ interface GameStore {
 
   // Game management
   loadGame: (game: SavedGame) => void;
-  saveCurrentGame: () => void;
+  saveCurrentGame: (label?: string) => void;
   startComparison: () => Promise<void>;
   cancelComparison: () => void;
   getComparisonGame: (gameId: string) => SavedGame | undefined;
@@ -107,12 +109,21 @@ const requestBody = {
     topK: options.topK || 5,
   };
   
+  // Timeout after 15s to prevent hanging requests from blocking future ones
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15000);
+  if (signal) {
+    signal.addEventListener('abort', () => controller.abort());
+  }
+
   const response = await fetch('/api/predict', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(requestBody),
-    signal,
+    signal: controller.signal,
   });
+
+  clearTimeout(timeoutId);
 
   if (!response.ok) {
     const errorText = await response.text();
@@ -224,7 +235,7 @@ async function simulateGameWithModels(
   };
 }
 
-export const useGameStore = create<GameStore>((set, get) => ({
+export const useGameStore = create<GameStore>()(persist((set, get) => ({
   // Initial state
   gameState: createInitialState(),
 
@@ -396,18 +407,31 @@ export const useGameStore = create<GameStore>((set, get) => ({
       return;
     }
 
+    const sims = options?.simulations ?? gameSettings.simulations;
+    const topK = options?.topK ?? 5;
+
+    // Check cache first
+    const moves = gameState.moves.slice(0, gameState.moveIndex + 1);
+    const cached = getCachedAnalysis(modelId, moves, sims);
+    if (cached) {
+      set({ analysisResult: cached, isAnalyzing: false });
+      return;
+    }
+
     set({ isAnalyzing: true });
 
     try {
       const result = await fetchPrediction(modelId, gameState, {
-        simulations: options?.simulations ?? gameSettings.simulations,
-        topK: options?.topK ?? 5,
+        simulations: sims,
+        topK,
       });
       
-      // Ensure topMoves is always an array
       if (!result.topMoves) {
         result.topMoves = [];
       }
+      
+      // Cache the result
+      setCachedAnalysis(modelId, moves, sims, result);
       
       set({ analysisResult: result, isAnalyzing: false });
     } catch {
@@ -423,17 +447,19 @@ export const useGameStore = create<GameStore>((set, get) => ({
       analysisResult: null,
     }),
 
-  saveCurrentGame: () =>
+  saveCurrentGame: (label?: string) =>
     set((state) => {
+      const modelName = state.gameSettings.selectedModel?.name || 'AI';
       const newGame: SavedGame = {
         id: `game-${Date.now()}`,
-        date: new Date().toISOString().split('T')[0],
+        date: new Date().toISOString(),
         moves: state.gameState.moves,
         winner: state.gameState.winner,
+        model1: label || `You vs ${modelName}`,
         moveCount: state.gameState.moves.length,
         duration: 0,
       };
-      return { savedGames: [...state.savedGames, newGame] };
+      return { savedGames: [newGame, ...state.savedGames] };
     }),
 
   startComparison: async () => {
@@ -645,4 +671,11 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const { compareResult } = get();
     return compareResult?.games.find((g) => g.id === gameId);
   },
+}), {
+  name: 'uttt-game-storage',
+  partialize: (state) => ({
+    gameState: state.gameState,
+    gameSettings: state.gameSettings,
+    savedGames: state.savedGames,
+  }),
 }));

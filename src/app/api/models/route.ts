@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 
 // Hugging Face Space URL and Token for private spaces
-const HF_SPACE_URL = process.env.HF_SPACE_URL || 'https://sean2474-ultra-tictactoe.hf.space';
+const HF_SPACE_URL = process.env.HF_SPACE_URL;
 const HF_TOKEN = process.env.HF_TOKEN;
 
 export async function GET() {

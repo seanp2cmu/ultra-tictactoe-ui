@@ -1,13 +1,19 @@
 import { NextResponse } from 'next/server';
 
 // Hugging Face Space URL
-const HF_SPACE_URL = process.env.HF_SPACE_URL || 'https://sean2474-ultra-tictactoe.hf.space';
+const HF_SPACE_URL = process.env.HF_SPACE_URL;
 const HF_TOKEN = process.env.HF_TOKEN;
+
+const WIN_LINES = [
+  [0, 1, 2], [3, 4, 5], [6, 7, 8],
+  [0, 3, 6], [1, 4, 7], [2, 5, 8],
+  [0, 4, 8], [2, 4, 6],
+];
 
 interface PredictRequest {
   modelId: string;
   gameState: {
-    boards: (string | null)[][]; // Can be named 'board' or 'boards'
+    boards: (string | null)[][];
     board?: (string | null)[][];
     boardWinners?: (string | null)[];
     metaBoard?: (string | null)[];
@@ -20,40 +26,55 @@ interface PredictRequest {
   topK?: number;
 }
 
+// Check sub-board winner from its 9 cells (0=empty, 1=X, 2=O)
+function checkSubBoardWinner(cells: number[]): number {
+  for (const [a, b, c] of WIN_LINES) {
+    if (cells[a] !== 0 && cells[a] === cells[b] && cells[a] === cells[c]) {
+      return cells[a]; // 1 or 2
+    }
+  }
+  if (cells.every(c => c !== 0)) return 3; // draw
+  return 0; // open
+}
+
 // Convert GameState to JSON string expected by Gradio app
 function gameStateToBoardJson(gameState: PredictRequest['gameState']): string {
-  // Use 'boards' or 'board' field (game-store uses 'boards', but actual GameState uses 'board')
   const inputBoards = gameState.boards || gameState.board || [];
   
-  // Convert boards: X=1, O=2, empty=0
-  const boards: number[][] = [];
+  // Convert boards from UI format (board[boardIndex][cellIndex]) to 9x9 grid (boards[row][col])
+  const boards: number[][] = Array.from({ length: 9 }, () => Array(9).fill(0));
   for (let bi = 0; bi < 9; bi++) {
-    const boardRow: number[] = [];
+    const boardRow = Math.floor(bi / 3);
+    const boardCol = bi % 3;
     for (let ci = 0; ci < 9; ci++) {
+      const cellRow = Math.floor(ci / 3);
+      const cellCol = ci % 3;
+      const row = boardRow * 3 + cellRow;
+      const col = boardCol * 3 + cellCol;
       const value = inputBoards[bi]?.[ci];
-      if (value === 'X') boardRow.push(1);
-      else if (value === 'O') boardRow.push(2);
-      else boardRow.push(0);
+      if (value === 'X') boards[row][col] = 1;
+      else if (value === 'O') boards[row][col] = 2;
     }
-    boards.push(boardRow);
   }
 
-  // Convert completed boards to 3x3 array
+  // Compute completed_boards from actual cell data (don't rely on boardWinners)
   const completed_boards: number[][] = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
-  const boardWinners = gameState.boardWinners || gameState.metaBoard || [];
-  for (let i = 0; i < 9; i++) {
-    const r = Math.floor(i / 3);
-    const c = i % 3;
-    const winner = boardWinners[i];
-    if (winner === 'X') completed_boards[r][c] = 1;
-    else if (winner === 'O') completed_boards[r][c] = 2;
-    else if (winner === 'draw') completed_boards[r][c] = 3;
+  for (let subR = 0; subR < 3; subR++) {
+    for (let subC = 0; subC < 3; subC++) {
+      const cells: number[] = [];
+      for (let cr = 0; cr < 3; cr++) {
+        for (let cc = 0; cc < 3; cc++) {
+          cells.push(boards[subR * 3 + cr][subC * 3 + cc]);
+        }
+      }
+      completed_boards[subR][subC] = checkSubBoardWinner(cells);
+    }
   }
 
   // Current player: X=1, O=2
   const current_player = gameState.currentPlayer === 'X' ? 1 : 2;
 
-  // Last move: convert to [row, col] format
+  // Last move: convert boardIndex/cellIndex to [row, col]
   let last_move: [number, number] | null = null;
   if (gameState.moveHistory.length > 0) {
     const lastMove = gameState.moveHistory[gameState.moveHistory.length - 1];
@@ -112,32 +133,64 @@ export async function POST(request: Request) {
         throw new Error('No event_id in Gradio response');
       }
 
-      // Step 2: GET result using event_id (SSE format)
+      // Step 2: GET result using event_id (SSE stream)
+      // Use AbortController with timeout to prevent hanging on local Gradio
+      const abortController = new AbortController();
+      const timeout = setTimeout(() => abortController.abort(), 30000);
+
       const resultResponse = await fetch(`${HF_SPACE_URL}/gradio_api/call/predict/${eventId}`, {
         headers,
+        signal: abortController.signal,
       });
       
       if (!resultResponse.ok) {
+        clearTimeout(timeout);
         const errorText = await resultResponse.text();
         throw new Error(`Gradio result failed: ${resultResponse.status} - ${errorText}`);
       }
       
-      // Parse SSE response
-      const resultText = await resultResponse.text();
-      const lines = resultText.split('\n');
+      // Read SSE stream incrementally — return as soon as we get a data line
       let dataLine: string | null = null;
-      
-      for (const line of lines) {
-        if (line.startsWith('event: error')) {
-          const errorData = lines.find(l => l.startsWith('data: '))?.slice(6);
-          throw new Error(`Gradio error: ${errorData}`);
+      const reader = resultResponse.body?.getReader();
+      if (!reader) {
+        clearTimeout(timeout);
+        throw new Error('No response body from Gradio');
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          // Keep the last (possibly incomplete) line in the buffer
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            if (line.startsWith('event: error')) {
+              throw new Error(`Gradio error: ${buffer}`);
+            }
+            if (line.startsWith('data: ')) {
+              const candidate = line.slice(6).trim();
+              if (candidate && candidate !== 'null') {
+                dataLine = candidate;
+              }
+            }
+          }
+
+          // Once we have data, stop reading immediately
+          if (dataLine) break;
         }
-        if (line.startsWith('data: ')) {
-          dataLine = line.slice(6);
-        }
+      } finally {
+        reader.cancel().catch(() => {});
+        clearTimeout(timeout);
       }
       
-      if (!dataLine || dataLine === 'null') {
+      if (!dataLine) {
         throw new Error('No data in Gradio response');
       }
       

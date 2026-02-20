@@ -3,16 +3,24 @@
 import { useEffect, useCallback, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/src/components/ui/button';
-import { ArrowLeft, RotateCcw, Undo2, Loader2 } from 'lucide-react';
+import { ArrowLeft, RotateCcw, Undo2, Loader2, Save, Search } from 'lucide-react';
 import { GameBoard } from '@/src/components/game-board';
 import { useGameStore } from '@/src/lib/game-store';
 
 export function AIGame() {
   const router = useRouter();
-  const { gameState, gameSettings, playMove, resetGame, undo, getAIPrediction, fetchModels, aiModels } = useGameStore();
+  const { gameState, gameSettings, playMove, resetGame, undo, goToMove, getAIPrediction, fetchModels, aiModels, saveCurrentGame, loadGame } = useGameStore();
+
+  const undoAI = useCallback(() => {
+    // In AI mode, undo 2 moves (AI move + player move)
+    const target = gameState.moveIndex - 2;
+    if (gameState.moveIndex >= 0) {
+      goToMove(Math.max(target, -1));
+    }
+  }, [gameState.moveIndex, goToMove]);
   const hasInitialized = useRef(false);
   const isAIMoveInProgress = useRef(false);
-  const [isThinking, setIsThinking] = useState(false);
+  const gameSavedRef = useRef(false);
 
   const isAITurn = gameSettings.aiFirst
     ? gameState.currentPlayer === 'X'
@@ -40,22 +48,28 @@ export function AIGame() {
     const makeMove = async () => {
       if (isAIMoveInProgress.current) return;
       isAIMoveInProgress.current = true;
-      setIsThinking(true);
 
       try {
-        const currentState = useGameStore.getState().gameState;
-        const prediction = await getAIPrediction(modelId, currentState);
+        const prediction = await getAIPrediction(modelId, useGameStore.getState().gameState);
         
         if (prediction && prediction.topMoves && prediction.topMoves.length > 0) {
-          const bestMove = prediction.topMoves[0];
-          const boardIndex = bestMove.move?.boardIndex ?? bestMove.boardIndex;
-          const cellIndex = bestMove.move?.cellIndex ?? bestMove.cellIndex;
-          playMove(boardIndex, cellIndex);
+          const currentState = useGameStore.getState().gameState;
+          // Try each move from the prediction until we find a valid one
+          let moved = false;
+          for (const candidate of prediction.topMoves) {
+            const boardIndex = candidate.move.boardIndex;
+            const cellIndex = candidate.move.cellIndex;
+            // Check if the move is valid before playing
+            const { isValidMove } = await import('@/src/lib/game-logic');
+            if (isValidMove(currentState, boardIndex, cellIndex)) {
+              playMove(boardIndex, cellIndex);
+              moved = true;
+              break;
+            }
+          }
         }
-      } catch (error) {
-        console.error('AI move failed:', error);
+      } catch {
       } finally {
-        setIsThinking(false);
         isAIMoveInProgress.current = false;
       }
     };
@@ -67,20 +81,48 @@ export function AIGame() {
   useEffect(() => {
     if (!hasInitialized.current) {
       hasInitialized.current = true;
-      resetGame();
     }
-  }, [resetGame]);
+  }, []);
+
+  // Auto-save when game ends
+  useEffect(() => {
+    if (gameState.winner && !gameSavedRef.current && gameState.moves.length > 0) {
+      gameSavedRef.current = true;
+      saveCurrentGame();
+    }
+  }, [gameState.winner, gameState.moves.length, saveCurrentGame]);
+
+  // Reset saved flag when game resets
+  useEffect(() => {
+    if (gameState.moves.length === 0) {
+      gameSavedRef.current = false;
+    }
+  }, [gameState.moves.length]);
+
+  const handleAnalyze = useCallback(() => {
+    if (gameState.moves.length === 0) return;
+    const game = {
+      id: `review-${Date.now()}`,
+      date: new Date().toISOString(),
+      moves: gameState.moves,
+      winner: gameState.winner,
+      moveCount: gameState.moves.length,
+      duration: 0,
+    };
+    loadGame(game);
+    router.push('/analysis');
+  }, [gameState, loadGame, router]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'r' || e.key === 'R') resetGame();
-      if (e.key === 'u' || e.key === 'U') undo();
+      if (e.key === 'u' || e.key === 'U') undoAI();
       if (e.key === 'Escape') router.push('/');
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [resetGame, undo, router]);
+  }, [resetGame, undoAI, router]);
 
   const handleCellClick = (boardIndex: number, cellIndex: number) => {
     if (gameState.winner || isAITurn) return;
@@ -101,7 +143,10 @@ export function AIGame() {
           vs {gameSettings.selectedModel?.name || 'AI'}
         </h1>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={undo} disabled={gameState.moves.length === 0 || isAITurn}>
+          <Button variant="outline" size="sm" onClick={handleAnalyze} disabled={gameState.moves.length === 0} title="Analyze in Analysis mode">
+            <Search className="h-4 w-4" />
+          </Button>
+          <Button variant="outline" size="sm" onClick={undoAI} disabled={gameState.moves.length === 0 || isAITurn}>
             <Undo2 className="h-4 w-4" />
           </Button>
           <Button variant="outline" size="sm" onClick={resetGame}>
@@ -152,7 +197,13 @@ export function AIGame() {
                   ? 'You Win!'
                   : 'AI Wins!'}
             </p>
-            <Button onClick={resetGame}>Play Again</Button>
+            <div className="flex gap-2 justify-center">
+              <Button onClick={resetGame}>Play Again</Button>
+              <Button variant="outline" onClick={handleAnalyze}>
+                <Search className="h-4 w-4 mr-2" />
+                Analyze
+              </Button>
+            </div>
           </div>
         )}
       </div>

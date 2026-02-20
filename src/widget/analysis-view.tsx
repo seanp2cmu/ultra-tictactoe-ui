@@ -86,18 +86,23 @@ export function AnalysisView() {
     }
   }, [aiModels, selectedModelId]);
 
-  // Auto-analyze when position changes
+  // Auto-analyze when position changes (debounced to avoid flooding server)
   useEffect(() => {
-    if (autoAnalyze && selectedModelId && !gameState.winner) {
+    if (!autoAnalyze || !selectedModelId || gameState.winner) return;
+    const timer = setTimeout(() => {
       analyzePosition(selectedModelId, gameState, { simulations: analysisDepth, topK: topMovesCount });
-    }
+    }, 400);
+    return () => clearTimeout(timer);
   }, [autoAnalyze, selectedModelId, gameState, analyzePosition, analysisDepth, topMovesCount]);
 
   // Convert API result to AnalysisData format
+  // evaluation from API is from current player's perspective — normalize to X's perspective
   const analysis: AnalysisData | null = useMemo(() => {
     if (!analysisResult || !analysisResult.topMoves) return null;
+    const rawEval = analysisResult.evaluation ?? 0;
+    const xEval = gameState.currentPlayer === 'X' ? rawEval : -rawEval;
     return {
-      positionValue: analysisResult.evaluation ?? 0,
+      positionValue: xEval,
       topMoves: analysisResult.topMoves.map(m => ({
         boardIndex: m.move?.boardIndex ?? m.boardIndex,
         cellIndex: m.move?.cellIndex ?? m.cellIndex,
@@ -105,7 +110,7 @@ export function AnalysisView() {
         continuation: m.continuation || [],
       })),
     };
-  }, [analysisResult]);
+  }, [analysisResult, gameState.currentPlayer]);
 
   const handleReset = useCallback(() => {
     setMoveTree(createMoveTree());
@@ -242,26 +247,32 @@ export function AnalysisView() {
                 {savedGames.length === 0 ? (
                   <p className="text-sm text-muted-foreground">No saved games</p>
                 ) : (
-                  savedGames.map((game) => (
-                    <Card
-                      key={game.id}
-                      className="cursor-pointer hover:bg-secondary/50"
-                      onClick={() => handleLoadGame(game)}
-                    >
-                      <CardContent className="p-3">
-                        <div className="flex justify-between items-center">
-                          <div>
-                            <p className="font-medium text-sm">{game.date}</p>
-                            <p className="text-xs text-muted-foreground">
-                              {game.moveCount} moves
-                              {game.winner && ` - ${game.winner === 'draw' ? 'Draw' : `${game.winner} wins`}`}
-                            </p>
+                  savedGames.map((game) => {
+                    const dateStr = game.date.includes('T')
+                      ? new Date(game.date).toLocaleString()
+                      : game.date;
+                    return (
+                      <Card
+                        key={game.id}
+                        className="cursor-pointer hover:bg-secondary/50"
+                        onClick={() => handleLoadGame(game)}
+                      >
+                        <CardContent className="p-3">
+                          <div className="flex justify-between items-center">
+                            <div>
+                              {game.model1 && (
+                                <p className="font-medium text-sm">{game.model1}</p>
+                              )}
+                              <p className="text-xs text-muted-foreground">
+                                {dateStr} · {game.moveCount} moves
+                                {game.winner && ` · ${game.winner === 'draw' ? 'Draw' : `${game.winner} wins`}`}
+                              </p>
+                            </div>
                           </div>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  ))
-                )}
+                        </CardContent>
+                      </Card>
+                    );
+                  }))}
               </div>
             </SheetContent>
           </Sheet>
