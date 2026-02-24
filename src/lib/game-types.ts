@@ -94,5 +94,10 @@ export interface AnalysisData {
     cellIndex: number;
     probability: number;
     continuation?: string[];
+    dtw?: number;
+    value?: number;
   }[];
+  dtwSolved?: boolean;
+  dtwOutcome?: 'win' | 'loss' | 'draw' | null;
+  dtwDepth?: number | null;
 }

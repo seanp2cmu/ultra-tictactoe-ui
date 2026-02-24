@@ -93,7 +93,7 @@ export function ModelSelectForm() {
               value={[gameSettings.simulations]}
               onValueChange={([value]) => setSimulations(value)}
               min={10}
-              max={1000}
+              max={1600}
               step={10}
             />
             <p className="text-xs text-muted-foreground">

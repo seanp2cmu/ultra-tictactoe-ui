@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/src/components/ui/button';
 import { Card, CardContent } from '@/src/components/ui/card';
@@ -97,19 +97,41 @@ export function AnalysisView() {
 
   // Convert API result to AnalysisData format
   // evaluation from API is from current player's perspective — normalize to X's perspective
+  // Use a ref to avoid eval bar flicker: when navigating moves, currentPlayer flips
+  // but analysisResult is stale (from previous position), causing a momentary sign flip.
+  // We only update when analysisResult itself changes (i.e. fresh server response).
+  const lastAnalysisRef = useRef<AnalysisData | null>(null);
+  const lastResultRef = useRef<typeof analysisResult>(null);
+
   const analysis: AnalysisData | null = useMemo(() => {
-    if (!analysisResult || !analysisResult.topMoves) return null;
+    // If analysisResult hasn't changed, keep the previous analysis (avoid flicker)
+    if (analysisResult === lastResultRef.current) {
+      return lastAnalysisRef.current;
+    }
+    lastResultRef.current = analysisResult;
+
+    if (!analysisResult || !analysisResult.topMoves) {
+      lastAnalysisRef.current = null;
+      return null;
+    }
     const rawEval = analysisResult.evaluation ?? 0;
     const xEval = gameState.currentPlayer === 'X' ? rawEval : -rawEval;
-    return {
+    const result: AnalysisData = {
       positionValue: xEval,
       topMoves: analysisResult.topMoves.map(m => ({
         boardIndex: m.move?.boardIndex ?? m.boardIndex,
         cellIndex: m.move?.cellIndex ?? m.cellIndex,
         probability: m.probability,
         continuation: m.continuation || [],
+        dtw: m.dtw,
+        value: m.value,
       })),
+      dtwSolved: analysisResult.dtwSolved,
+      dtwOutcome: analysisResult.dtwOutcome,
+      dtwDepth: analysisResult.dtwDepth,
     };
+    lastAnalysisRef.current = result;
+    return result;
   }, [analysisResult, gameState.currentPlayer]);
 
   const handleReset = useCallback(() => {
@@ -295,12 +317,28 @@ export function AnalysisView() {
                 />
               </div>
               <span className="text-xs font-medium text-player-o">O</span>
-              <span className="text-xs text-muted-foreground mt-1">
-                {analysis 
-                  ? `${analysis.positionValue > 0 ? '+' : ''}${analysis.positionValue.toFixed(2)}`
-                  : '0.00'
-                }
-              </span>
+              {analysis?.dtwSolved ? (
+                <div className="flex flex-col items-center mt-1">
+                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                    analysis.dtwOutcome === 'win' 
+                      ? (gameState.currentPlayer === 'X' ? 'bg-player-x/20 text-player-x' : 'bg-player-o/20 text-player-o')
+                      : analysis.dtwOutcome === 'loss'
+                        ? (gameState.currentPlayer === 'X' ? 'bg-player-o/20 text-player-o' : 'bg-player-x/20 text-player-x')
+                        : 'bg-muted text-muted-foreground'
+                  }`}>
+                    {analysis.dtwOutcome === 'win' ? 'W' : analysis.dtwOutcome === 'loss' ? 'L' : 'D'}
+                    {analysis.dtwDepth != null ? analysis.dtwDepth : ''}
+                  </span>
+                  <span className="text-[9px] text-muted-foreground">DTW</span>
+                </div>
+              ) : (
+                <span className="text-xs text-muted-foreground mt-1">
+                  {analysis 
+                    ? `${analysis.positionValue > 0 ? '+' : ''}${analysis.positionValue.toFixed(2)}`
+                    : '0.00'
+                  }
+                </span>
+              )}
             </div>
 
             <div className="w-[320px] sm:w-[400px] md:w-[450px]">
@@ -467,6 +505,16 @@ export function AnalysisView() {
                               <span className={gameState.currentPlayer === 'X' ? 'text-player-x font-semibold' : 'text-player-o font-semibold'}>
                                 {moveNotation}
                               </span>
+                              {move.dtw != null && (
+                                <span className={`text-[10px] font-bold px-1 py-0.5 rounded ${
+                                  analysis?.dtwSolved
+                                    ? move.dtw === 0 ? 'bg-muted text-muted-foreground'
+                                    : (move.value ?? 0) > 0 ? 'bg-green-500/20 text-green-600' : 'bg-red-500/20 text-red-500'
+                                    : 'bg-muted text-muted-foreground'
+                                }`}>
+                                  {(move.value ?? 0) > 0 ? 'W' : (move.value ?? 0) < 0 ? 'L' : 'D'}{move.dtw}
+                                </span>
+                              )}
                               {move.continuation && move.continuation.length > 0 && (
                                 <>
                                   {move.continuation.slice(0, 4).map((cont, j) => {

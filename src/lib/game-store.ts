@@ -18,14 +18,21 @@ import { getCachedAnalysis, setCachedAnalysis } from './analysis-cache';
 
 interface ModelPrediction {
   move: { boardIndex: number; cellIndex: number };
+  boardIndex?: number;
+  cellIndex?: number;
   probability: number;
   value: number;
+  dtw?: number;
+  continuation?: string[];
 }
 
 interface ModelResponse {
   topMoves: ModelPrediction[];
   evaluation: number;
   thinkingTime: number;
+  dtwSolved?: boolean;
+  dtwOutcome?: 'win' | 'loss' | 'draw' | null;
+  dtwDepth?: number | null;
 }
 
 interface GameStore {

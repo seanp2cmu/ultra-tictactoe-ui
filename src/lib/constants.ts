@@ -11,6 +11,7 @@ export const DEPTH_PRESETS = [
   { label: 'Normal', value: 100 },
   { label: 'Deep', value: 200 },
   { label: 'Very Deep', value: 500 },
+  { label: 'Very Deep', value: 1000 },
 ];
 
 // Top moves count options

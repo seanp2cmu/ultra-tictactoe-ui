@@ -111,7 +111,6 @@ export async function POST(request: Request) {
       }
 
       const boardJson = gameStateToBoardJson(gameState);
-
       // Step 1: POST to /gradio_api/call/predict to get event_id
       const callResponse = await fetch(`${HF_SPACE_URL}/gradio_api/call/predict`, {
         method: 'POST',
@@ -136,7 +135,7 @@ export async function POST(request: Request) {
       // Step 2: GET result using event_id (SSE stream)
       // Use AbortController with timeout to prevent hanging on local Gradio
       const abortController = new AbortController();
-      const timeout = setTimeout(() => abortController.abort(), 30000);
+      const timeout = setTimeout(() => abortController.abort(), 120000);
 
       const resultResponse = await fetch(`${HF_SPACE_URL}/gradio_api/call/predict/${eventId}`, {
         headers,
@@ -248,6 +247,7 @@ export async function POST(request: Request) {
           value: m.value,
           visits: m.visits,
           continuation,
+          dtw: (m as any).dtw,
         };
       });
 
@@ -256,6 +256,9 @@ export async function POST(request: Request) {
         evaluation: output.evaluation || 0,
         thinkingTime: Date.now() - startTime,
         principalVariation: output.principal_variation || [],
+        dtwSolved: output.dtw_solved || false,
+        dtwOutcome: output.dtw_outcome || null,
+        dtwDepth: output.dtw_depth ?? null,
       });
     } catch (apiError) {
       console.error('[v0] Gradio API error:', apiError);
